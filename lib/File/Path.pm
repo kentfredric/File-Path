@@ -6,11 +6,9 @@ use strict;
 use Cwd 'getcwd';
 use File::Basename ();
 use File::Spec     ();
-use English qw( -no_match_vars );
 
 BEGIN {
-    if ( $OLD_PERL_VERSION < 5.006 ) {
-
+    if ($] < 5.006) {
         # can't say 'opendir my $dh, $dirname'
         # need to initialise $dh
         eval 'use Symbol';
@@ -25,16 +23,16 @@ $VERSION   = eval $VERSION;
 @EXPORT    = qw(mkpath rmtree);
 @EXPORT_OK = qw(make_path remove_tree);
 
-my $is_vms   = $OSNAME eq 'VMS';
-my $is_macos = $OSNAME eq 'MacOS';
+my $is_vms     = $^O eq 'VMS';
+my $is_macos   = $^O eq 'MacOS';
 
 # These OSes complain if you want to remove a file that you have no
 # write permission to:
-my $force_writeable = grep { $OSNAME eq $_ } qw(amigaos dos epoc MSWin32 MacOS os2);
+my $force_writeable = grep {$^O eq $_} qw(amigaos dos epoc MSWin32 MacOS os2);
 
 # Unix-like systems need to stat each directory in order to detect
 # race condition. MS-Windows is immune to this particular attack.
-my $need_stat_check = !( $OSNAME eq 'MSWin32' );
+my $need_stat_check = !($^O eq 'MSWin32');
 
 sub _carp {
     require Carp;
@@ -51,13 +49,13 @@ sub _error {
     my $message = shift;
     my $object  = shift;
 
-    if ( $arg->{error} ) {
+    if ($arg->{error}) {
         $object = '' unless defined $object;
-        $message .= ": $ERRNO" if $ERRNO;
-        push @{ ${ $arg->{error} } }, { $object => $message };
+        $message .= ": $!" if $!;
+        push @{${$arg->{error}}}, {$object => $message};
     }
     else {
-        _carp( defined($object) ? "$message for $object: $ERRNO" : "$message: $ERRNO" );
+        _carp(defined($object) ? "$message for $object: $!" : "$message: $!");
     }
 }
 
@@ -139,8 +137,7 @@ sub _mkpath {
     my ( @created );
     foreach my $path ( @{$paths} ) {
         next unless defined($path) and length($path);
-        $path .= '/' if $OSNAME eq 'os2' and $path =~ /^\w:\z/s; # feature of CRT
-
+        $path .= '/' if $^O eq 'os2' and $path =~ /^\w:\z/s; # feature of CRT
         # Logic wants Unix paths, so go with the flow.
         if ($is_vms) {
             next if $path eq '/';
@@ -171,15 +168,15 @@ sub _mkpath {
             }
         }
         else {
-            my $save_bang = $ERRNO;
-            my ( $e, $e1 ) = ( $save_bang, $EXTENDED_OS_ERROR );
+            my $save_bang = $!;
+            my ($e, $e1) = ($save_bang, $^E);
             $e .= "; $e1" if $e ne $e1;
 
             # allow for another process to have created it meanwhile
-            if ( ! -d $path ) {
-                $ERRNO = $save_bang;
-                if ( $arg->{error} ) {
-                    push @{ ${ $arg->{error} } }, { $path => $e };
+            if (!-d $path) {
+                $! = $save_bang;
+                if ($arg->{error}) {
+                    push @{${$arg->{error}}}, {$path => $e};
                 }
                 else {
                     _croak("mkdir $path: $e");
@@ -253,14 +250,13 @@ sub rmtree {
     for my $p (@$paths) {
 
         # need to fixup case and map \ to / on Windows
-        my $ortho_root = $OSNAME eq 'MSWin32' ? _slash_lc($p) : $p;
-        my $ortho_cwd =
-          $OSNAME eq 'MSWin32' ? _slash_lc( $arg->{cwd} ) : $arg->{cwd};
+        my $ortho_root = $^O eq 'MSWin32' ? _slash_lc($p)          : $p;
+        my $ortho_cwd  = $^O eq 'MSWin32' ? _slash_lc($arg->{cwd}) : $arg->{cwd};
         my $ortho_root_length = length($ortho_root);
-        $ortho_root_length-- if $OSNAME eq 'VMS';   # don't compare '.' with ']'
-        if ( $ortho_root_length && _is_subdir( $ortho_root, $ortho_cwd ) ) {
-            local $ERRNO = 0;
-            _error( $arg, "cannot remove path when cwd is $arg->{cwd}", $p );
+        $ortho_root_length-- if $^O eq 'VMS'; # don't compare '.' with ']'
+        if ($ortho_root_length && _is_subdir($ortho_root, $ortho_cwd)) {
+            local $! = 0;
+            _error($arg, "cannot remove path when cwd is $arg->{cwd}", $p);
             next;
         }
 
@@ -268,7 +264,7 @@ sub rmtree {
             $p = ":$p" unless $p =~ /:/;
             $p .= ":" unless $p =~ /:\z/;
         }
-        elsif ( $OSNAME eq 'MSWin32' ) {
+        elsif ($^O eq 'MSWin32') {
             $p =~ s{[/\\]\z}{};
         }
         else {
@@ -373,9 +369,9 @@ sub _rmtree {
             }
 
             my $d;
-            $d = gensym() if $OLD_PERL_VERSION < 5.006;
-            if ( !opendir $d, $curdir ) {
-                _error( $arg, "cannot opendir", $canon );
+            $d = gensym() if $] < 5.006;
+            if (!opendir $d, $curdir) {
+                _error($arg, "cannot opendir", $canon);
                 @files = ();
             }
             else {
@@ -416,16 +412,13 @@ sub _rmtree {
             }
 
             # don't leave the client code in an unexpected directory
-            chdir( $arg->{cwd} )
-              or
-              _croak("cannot chdir to $arg->{cwd} from $canon: $ERRNO, aborting.");
+            chdir($arg->{cwd})
+                or _croak("cannot chdir to $arg->{cwd} from $canon: $!, aborting.");
 
             # ensure that a chdir upwards didn't take us somewhere other
             # than we expected (see CVE-2002-0435)
-            ( $cur_dev, $cur_inode ) = ( stat $curdir )[ 0, 1 ]
-              or _croak(
-                "cannot stat prior working directory $arg->{cwd}: $ERRNO, aborting."
-              );
+            ($cur_dev, $cur_inode) = (stat $curdir)[0,1]
+                or _croak("cannot stat prior working directory $arg->{cwd}: $!, aborting.");
 
             if ($need_stat_check) {
                 ( $arg->{device} eq $cur_dev and $arg->{inode} eq $cur_inode )
